@@ -1,0 +1,60 @@
+name: TLS Unload Crash
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Control: glibc keeps the unloaded library mapped (keepalive), so the
+  # TLS destructor still has valid code to run at exit -> clean exit 0.
+  linux:
+    name: Linux (expected PASS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run
+        run: |
+          mkdir build && cd build
+          cmake .. && cmake --build .
+          ./main
+          echo "main exited with code $?"
+
+  # The lesson: Haiku unmaps the library on dlclose, so the registered TLS
+  # destructor points at unmapped code -> SIGSEGV at process exit.
+  haiku:
+    name: Haiku (expected CRASH at exit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run on Haiku
+        uses: cross-platform-actions/action@v1.2.0
+        with:
+          operating_system: haiku
+          version: r1beta5
+          architecture: x86-64
+          shell: sh
+          run: |
+            # Make the debug_server report-and-continue instead of stopping to
+            # wait for a debugger. Without this a crashing process hangs and the
+            # job times out instead of surfacing the SIGSEGV.
+            mkdir -p /boot/home/config/settings/system/debug_server
+            printf 'default_action report\n' > /boot/home/config/settings/system/debug_server/settings
+
+            pkgman install -y cmake git
+
+            mkdir build && cd build
+            cmake .. && cmake --build .
+            ./main
+            status=$?
+            echo "main exited with code $status"
+            if [ "$status" -gt 128 ]; then
+              echo "CRASHED with signal $((status - 128)) at exit (no keepalive)"
+            fi
+            exit "$status"

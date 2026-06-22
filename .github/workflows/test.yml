@@ -42,8 +42,8 @@ jobs:
           shell: sh
           run: |
             # Make the debug_server report-and-continue instead of stopping to
-            # wait for a debugger. Without this a crashing process hangs and the
-            # job times out instead of surfacing the SIGSEGV.
+            # wait for a debugger. 'report' writes a full crash report (stack
+            # trace) to disk, which is exactly the concrete evidence we want.
             mkdir -p /boot/home/config/settings/system/debug_server
             printf 'default_action report\n' > /boot/home/config/settings/system/debug_server/settings
 
@@ -51,10 +51,37 @@ jobs:
 
             mkdir build && cd build
             cmake .. && cmake --build .
+
+            # Don't let the crash abort the step before we collect evidence.
+            set +e
+            echo "===== running ./main ====="
             ./main
             status=$?
-            echo "main exited with code $status"
+            echo "===== ./main exit status: $status ====="
             if [ "$status" -gt 128 ]; then
-              echo "CRASHED with signal $((status - 128)) at exit (no keepalive)"
+              echo ">>> CRASHED with signal $((status - 128)) at exit (no keepalive)"
             fi
+
+            # Dump the debug_server crash report(s): the stack trace shows the
+            # fault is in the TLS destructor inside the now-unmapped libtlslib.
+            echo "===== crash report(s) ====="
+            # Copy into the work dir so the action rsyncs them back to the host
+            # for artifact upload (only /boot/home/home/runner/work is synced).
+            find /boot/home /boot/system/var -name '*-debug-*.report' 2>/dev/null \
+              | while read -r f; do
+                  echo "---- $f ----"
+                  cat "$f"
+                  cp "$f" "$PWD/" 2>/dev/null || true
+                done
+            echo "===== syslog tail (crash entries) ====="
+            tail -n 50 /boot/system/var/log/syslog 2>/dev/null | grep -iE 'main|debug|segment|crash|signal' || true
+
             exit "$status"
+
+      - name: Upload Haiku crash report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: haiku-crash-report
+          path: build/*.report
+          if-no-files-found: warn

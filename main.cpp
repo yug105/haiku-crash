@@ -2,6 +2,11 @@
 #include <dlfcn.h>
 
 int main() {
+    // Unbuffered stdout: the fault happens at process exit (after main
+    // returns), so anything left in a buffer would be lost. Force each line
+    // out immediately so the CI log shows exactly how far we got.
+    setvbuf(stdout, nullptr, _IONBF, 0);
+
     // Load the library that owns the thread_local Foo.
     void* handle = dlopen("./libtlslib.so", RTLD_NOW);
     if (!handle) {
